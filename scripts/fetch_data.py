@@ -1,4 +1,4 @@
-"""Rebuild the test data for shapes/. Nothing here is committed.
+"""Rebuild the test data. Nothing here is committed.
 
 Three real datasets, no synthetic data - synthetic tables are unrealistically
 regular and would make any columnar transform look better than it is:
@@ -11,7 +11,7 @@ regular and would make any columnar transform look better than it is:
                  whole story for the SQL dump transform
   layer.tar.gz   a real Docker Hub layer blob
 
-Requires corpus/enwik8 (run scripts/fetch_corpus.py first).
+Fetches enwik8 itself if needed - the wiki tables are built from real article text.
 
     python scripts/fetch_shape_data.py
 """
@@ -24,7 +24,7 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-DATA = os.path.join(ROOT, 'shapes', 'data')
+DATA = os.path.join(ROOT, 'data')
 ENWIK8 = os.path.join(ROOT, 'corpus', 'enwik8')
 
 # Pinned to a commit, not master: this blob is the source of the best Part 2
@@ -59,13 +59,33 @@ def chinook():
               '        The SQL-dump figures in the README were measured on that one.')
 
 
+ENWIK8_ZIP = 'https://mattmahoney.net/dc/enwik8.zip'
+ENWIK8_SIZE = 100_000_000
+
+
+def _fetch_enwik8():
+    """Real article text for the wiki tables. Not committed - 100 MB, and it is
+    Wikipedia's content under its own licence, not ours to redistribute."""
+    import io
+    import zipfile
+    os.makedirs(os.path.dirname(ENWIK8), exist_ok=True)
+    print(f'fetching {ENWIK8_ZIP} (100 MB, one time) ...')
+    blob = get(ENWIK8_ZIP)
+    with zipfile.ZipFile(io.BytesIO(blob)) as z:
+        data = z.read(next(n for n in z.namelist() if n.endswith('enwik8')))
+    if len(data) != ENWIK8_SIZE:
+        sys.exit(f'  enwik8: got {len(data):,} bytes, expected {ENWIK8_SIZE:,}')
+    open(ENWIK8, 'wb').write(data)
+    print(f'  enwik8: {len(data):,} bytes')
+
+
 def wiki_tables():
     """Real Wikipedia revision metadata -> a real SQLite file and its SQL dump."""
     if os.path.exists(os.path.join(DATA, 'wiki.db')):
         print('have wiki.db')
         return
     if not os.path.exists(ENWIK8):
-        sys.exit('need corpus/enwik8 - run scripts/fetch_corpus.py first')
+        _fetch_enwik8()
     raw = open(ENWIK8, 'rb').read(40_000_000).decode('utf-8', errors='ignore')
     pages = re.findall(
         r'<title>(.*?)</title>.*?<id>(\d+)</id>.*?<timestamp>(.*?)</timestamp>.*?'

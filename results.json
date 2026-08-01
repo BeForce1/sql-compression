@@ -1,0 +1,198 @@
+{
+  "_about": "Every number here was measured by the code in this repo, on the machine described in 'environment'. Ratios are deterministic and reproducible; any MB/s figure is not, and is labelled. Extracted from github.com/BeForce1/llm-compression-lab on 2026-08-01, where this began as \"Part 2\".",
+  "environment": {
+    "cpu": "20 logical cores, x86-64, no AVX-512",
+    "gpu": "Intel Iris Xe integrated (unused - all inference on CPU)",
+    "os": "Windows 11",
+    "python": "3.13.11",
+    "torch_dtype": "float32",
+    "date": "2026-07-30/31"
+  },
+  "method": "Measure the incumbent first. baseline.py runs five stock codecs against each target BEFORE any transform is written, so the question is always \"what is left to win?\" rather than \"did my idea help?\". Two of the three targets here were decided by that step alone.",
+  "targets": {
+    "_about": "Part 2. Instead of a better general compressor, exploit structure a general compressor cannot see: a cheap reversible transform, then a normal backend. Measured on real data - a real Docker Hub layer, real Wikipedia revision metadata in a real SQLite container, and a real third-party sample database. Synthetic tables are unrealistically regular and would flatter any columnar transform.",
+    "oci_layer": {
+      "_about": "RE-ENCODE, not a lossless byte transform: identical tar content, different digest. Legal because zstd is an OCI layer media type. No transform code at all - this is purely a codec choice.",
+      "source": "python:3.12-slim, largest layer, amd64",
+      "as_shipped_gzip": 29780905,
+      "inner_tar": 81049600,
+      "tar_members": 3260,
+      "reencoded": {
+        "gzip -9": 29796986,
+        "bz2 -9": 25748725,
+        "zstd -19": 20164715,
+        "xz -9": 17782292,
+        "zstd -19 --long=27": 19383787,
+        "xz -9 +BCJ": 17286776
+      },
+      "saving_vs_shipped": {
+        "zstd -19": 0.323,
+        "zstd -19 --long=27": 0.349,
+        "xz -9": 0.403,
+        "xz -9 +BCJ": 0.42
+      },
+      "mechanism": "gzip's 32 KB window cannot see cross-file redundancy in an 81 MB tar of 3,260 members; xz's 64 MB window can. An architectural limit, not a modelling one. Two flags then buy more of the same: a 128 MB window with long-distance matching (--long=27, which is the decoder's own default limit, so the frame still decodes everywhere) finds cross-member matches zstd's default window misses, and the x86 BCJ filter converts relative branch targets to absolute ones in a tar that is ~25% ELF.",
+      "deployable": "zstd today, and --long=27 changes nothing about that - same media type, same decoders, and it is FASTER than plain -19 here (25.6s vs 42.4s). So the deployable number is -34.9%, not -32.3%. xz would need a new media type, so treat -42.0% as the format-unconstrained ceiling rather than an offer.",
+      "tested_and_rejected": {
+        "zstd -22 --ultra --long=27": {
+          "size": 19201855,
+          "why": "0.9% smaller than -19 --long for ~3x the encode time. Not worth it."
+        }
+      }
+    },
+    "sql_dumps": {
+      "_about": "Byte-lossless columnar transform, shapes/sqldump.py. A dump stores rows, so a timestamp sits beside a title beside an integer - three distributions interleaved. Regrouping column-major fixes that; each column is then stored the smallest of five ways (ASCII, delta, byte-planes, delta+planes, or epoch-seconds+planes for ISO-8601 timestamps), chosen per column by a proxy codec. Round-trip asserted every run, plus a selfcheck() over dump shapes the sample files do not contain. 'columnar_only' is the regrouping alone; 'columnar_plus_int_only' adds the integer codec but not timestamps.",
+      "files": {
+        "chinook.sql": {
+          "raw": 968170,
+          "xz -9": 102532,
+          "transform+xz": 73252,
+          "gain": 0.286,
+          "zstd -19": 119423,
+          "transform+zstd": 76924,
+          "gain_zstd": 0.356,
+          "shape": "real relational schema, many narrow typed columns",
+          "columnar_only": {
+            "transform+xz": 84256,
+            "gain": 0.178
+          }
+        },
+        "wiki_meta.sql": {
+          "raw": 498607,
+          "xz -9": 99188,
+          "transform+xz": 77212,
+          "gain": 0.222,
+          "zstd -19": 110423,
+          "transform+zstd": 80450,
+          "gain_zstd": 0.271,
+          "shape": "6 narrow columns, real data",
+          "columnar_only": {
+            "transform+xz": 85044,
+            "gain": 0.143
+          },
+          "columnar_plus_int_only": {
+            "transform+xz": 81924,
+            "gain": 0.174
+          }
+        },
+        "wiki.sql": {
+          "raw": 6971231,
+          "xz -9": 1910312,
+          "transform+xz": 1906140,
+          "gain": 0.002,
+          "shape": "one dominant TEXT column - already effectively columnar",
+          "zstd -19": 1955031,
+          "transform+zstd": 1950450,
+          "gain_zstd": 0.002,
+          "columnar_only": {
+            "transform+xz": 1908248,
+            "gain": 0.001
+          }
+        }
+      },
+      "finding": "Value depends entirely on table SHAPE, not size. Narrow typed columns: 22-29% better than xz. One dominant blob column: nothing - but see the wiki.sql note, that file barely reaches the parser. Regrouping alone was worth 14-18%; re-spelling integer columns took chinook to 28.5%; re-spelling ISO-8601 timestamps as epoch seconds took wiki_meta from 17.4% to 22.2%. Most of the win beyond the regrouping was in HOW values were spelled, not where they sat.",
+      "int_encoding": {
+        "_about": "Per-column choice, measured in isolation with xz -9e pb=0 lc=4. Neither encoding wins everywhere, which is why the pick is stored rather than predicted. The timestamp row is the same mechanism applied to a string column: 22 bytes of ISO-8601 spell a number that fits in four.",
+        "examples": {
+          "chinook Track.0 (monotonic id)": {
+            "ascii": 1431,
+            "delta": 45,
+            "planes": 328,
+            "delta+planes": 66
+          },
+          "chinook InvoiceLine.2": {
+            "ascii": 2272,
+            "delta": 69,
+            "planes": 1232,
+            "delta+planes": 112
+          },
+          "chinook Track.7 (file sizes)": {
+            "ascii": 13209,
+            "delta": 13239,
+            "planes": 10678,
+            "delta+planes": 11200
+          },
+          "wiki_meta revision.5": {
+            "ascii": 9999,
+            "delta": 11594,
+            "planes": 8510,
+            "delta+planes": 9992
+          },
+          "wiki_meta revision.0": {
+            "ascii": 2307,
+            "delta": 828,
+            "planes": 1663,
+            "delta+planes": 823
+          },
+          "wiki_meta revision.2 (ISO-8601 timestamp)": {
+            "ascii": 20824,
+            "epoch_ascii": 17812,
+            "epoch_delta": 18848,
+            "epoch_planes": 16092,
+            "epoch_delta_planes": 16816
+          }
+        }
+      }
+    },
+    "sqlite_pages": {
+      "_about": "Byte-lossless page-kind grouping, shapes/sqlitepages.py. Sorts pages by b-tree kind so like sits with like, keeping a permutation. Stores one KIND byte per page rather than a 4-byte permutation: the sort is stable on (kind, index), so the kinds fully determine the order and the permutation was 4x larger than it needed to be. Worth +0.1 pp here, which matters only because the whole gain is small.",
+      "results": {
+        "chinook.db": {
+          "xz -9": 221852,
+          "transform+xz": 217192,
+          "gain": 0.021
+        },
+        "wiki_meta.db": {
+          "xz -9": 152656,
+          "transform+xz": 146460,
+          "gain": 0.041
+        },
+        "wiki.db": {
+          "xz -9": 2088376,
+          "transform+xz": 2077660,
+          "gain": 0.005
+        }
+      },
+      "outcome": "DOES NOT PAY: 0.5-4.1%.",
+      "why": "wiki.db is 2,830 leaf-table pages of 2,913 - grouping by kind has one kind to work with, and freshly built databases have no free pages to gather. The win needs record-level columnarisation inside leaf pages, i.e. the same mechanism that worked on dumps, which is days of work."
+    },
+    "conclusion": "The largest win of the three was not an algorithm, a transform or a model - it was not using gzip. A flag change bought 32%; an afternoon of transform work bought 18% on one data shape. Measure the incumbent's configuration before assuming you need to invent."
+  },
+  "negative_results": [
+    {
+      "claim": "grouping SQLite pages by b-tree kind will help, since page kinds have very different byte character",
+      "outcome": "REFUTED",
+      "detail": "0.4-4.0%. Real databases are overwhelmingly one page kind (2,830 of 2,913 leaf-table in wiki.db) and freshly built ones have no free pages, so there is nothing to group."
+    },
+    {
+      "claim": "xz filter tuning (pb=0, lc=4) is worth ~2 points on the SQL dump headline",
+      "outcome": "TRUE BEFORE THE TRANSFORM, THEN NOT",
+      "detail": "Against the plain columnar container it moved chinook 17.8% -> 19.7%. After per-column int encoding the same flags are worth 0.4 points (28.5% -> 28.9%) and they shrink the plain baseline by about as much, so the same-config gain does not move. The flags and the encoding were fixing the same thing: decimal digits misaligned against the coder. Not shipped."
+    },
+    {
+      "claim": "the wiki.sql -0.1% proves columnarisation fails on single-blob-column tables",
+      "outcome": "NOT SUPPORTED BY THAT MEASUREMENT",
+      "detail": "Audited 2026-07-31: only 1,176 of 68,576 lines match the INSERT regex, because SQLite .dump emits string values containing raw newlines and the parser is line-based. 6,813,857 of 6,971,231 bytes (97.7%) ride in the literals stream untouched, so the transform essentially never ran on this file. The shape hypothesis may still be true - wiki_meta is the controlled test for it - but wiki.sql is evidence of parser coverage, not of columnar failure. Statement-level parsing is the fix."
+    },
+    {
+      "claim": "dictionary-encoding the dominant string columns (unique values + index ints) will beat storing them raw",
+      "outcome": "REFUTED",
+      "detail": "Loses on every heavy column measured with xz -9: revision.1 -104 B, revision.3 -764, Track.5 -117, Track.1 -421, Album.1 -83. xz already models the repetition, and revision.1 and Album.1 are 100% unique values so the dictionary is pure overhead."
+    },
+    {
+      "claim": "front-coding string columns (shared prefix with the previous value) will pay, as it does in search indexes",
+      "outcome": "REFUTED",
+      "detail": "Track.1 26,744 -> 26,900 B and revision.1 29,948 -> 29,960 B under xz -9. A length-prefixed variant lost by 3-4 KB. The LZ pass already finds those shared prefixes."
+    },
+    {
+      "claim": "RLE-compacting the per-row plan stream is worth writing",
+      "outcome": "REFUTED",
+      "detail": "The plan is nearly free once compressed: chinook 81,893 B raw becomes 244 B under xz, and RLE gets it to 168 B. wiki_meta 140 B -> 76 B. Saving 0.1-0.2% of a 73-82 KB output, and less inside the shared container where xz already sees the repetition."
+    },
+    {
+      "claim": "the cheap zstd-3 proxy used to pick a column encoding will mis-pick against the real xz backend",
+      "outcome": "REFUTED",
+      "detail": "Audited on the five heaviest int columns (Track.6, Track.7, PlaylistTrack.1, revision.0, revision.5): the proxy picked the xz -9 optimum every time, wasting 0 bytes. Keeping the transform backend-agnostic costs nothing measurable."
+    }
+  ]
+}

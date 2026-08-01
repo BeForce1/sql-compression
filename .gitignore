@@ -1,0 +1,14 @@
+# Test data: a container image, Wikipedia-derived tables and a third-party
+# sample database. Fetched by scripts/fetch_data.py, never redistributed here -
+# they are other people's content under their own licences, and this repo is
+# MIT. Redistributing them would be relicensing what is not ours.
+data/*
+corpus/*
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
