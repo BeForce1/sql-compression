@@ -27,8 +27,13 @@ ROOT = os.path.dirname(HERE)
 DATA = os.path.join(ROOT, 'shapes', 'data')
 ENWIK8 = os.path.join(ROOT, 'corpus', 'enwik8')
 
-CHINOOK = ('https://github.com/lerocha/chinook-database/raw/master/'
+# Pinned to a commit, not master: this blob is the source of the best Part 2
+# number in the repo, and upstream rebuilds it across releases. Verified
+# byte-identical to the measured blob on 2026-07-31.
+CHINOOK_SHA = 'ac32dbc3d5b383633c3fd687934f9c719773f00d'
+CHINOOK = (f'https://github.com/lerocha/chinook-database/raw/{CHINOOK_SHA}/'
            'ChinookDatabase/DataSources/Chinook_Sqlite.sqlite')
+CHINOOK_SIZE_MEASURED = 1_007_616     # the blob the README's -28.6% came from
 REPO, TAG = 'library/python', '3.12-slim'
 LAYER_SIZE_MEASURED = 29_780_905      # the blob the README's numbers came from
 
@@ -49,6 +54,9 @@ def chinook():
         sys.exit(f'chinook fetch looks wrong: {len(blob)} bytes')
     open(dst, 'wb').write(blob)
     print(f'  chinook.db: {len(blob):,} bytes')
+    if len(blob) != CHINOOK_SIZE_MEASURED:
+        print(f'  NOTE: DIFFERS from the measured blob ({CHINOOK_SIZE_MEASURED:,} B).\n'
+              '        The SQL-dump figures in the README were measured on that one.')
 
 
 def wiki_tables():
