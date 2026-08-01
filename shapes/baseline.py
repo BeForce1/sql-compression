@@ -29,16 +29,28 @@ def codecs():
     }
 
 
-def report(label, data, note=''):
+# Two flags that matter only on a big binary blob, so they are not in the
+# default table: a 128 MB window (the decoder's own default limit, so the frame
+# still decodes everywhere) and the x86 branch filter for ELF-heavy tars.
+def oci_codecs():
+    p = zstandard.ZstdCompressionParameters.from_level(19, window_log=27, enable_ldm=True)
+    return {
+        'zstd -19 --long': lambda d: zstandard.ZstdCompressor(compression_params=p).compress(d),
+        'xz -9 +BCJ': lambda d: lzma.compress(d, filters=[
+            {'id': lzma.FILTER_X86}, {'id': lzma.FILTER_LZMA2, 'preset': 9}]),
+    }
+
+
+def report(label, data, note='', extra=None):
     print(f'\n{label}  -  {len(data):,} bytes {note}')
-    print(f"  {'codec':<10} {'size':>12} {'ratio':>7} {'% of raw':>9} {'MB/s':>7}")
+    print(f"  {'codec':<15} {'size':>12} {'ratio':>7} {'% of raw':>9} {'MB/s':>7}")
     best = None
-    for name, fn in codecs().items():
+    for name, fn in {**codecs(), **(extra or {})}.items():
         t = time.perf_counter()
         out = fn(data)
         el = time.perf_counter() - t
         mbs = len(data) / el / 1e6
-        print(f'  {name:<10} {len(out):>12,} {len(data)/len(out):>6.2f}x '
+        print(f'  {name:<15} {len(out):>12,} {len(data)/len(out):>6.2f}x '
               f'{100*len(out)/len(data):>8.1f}% {mbs:>7.1f}')
         if best is None or len(out) < best[1]:
             best = (name, len(out))
@@ -74,4 +86,4 @@ if __name__ == '__main__':
             print(f'  {len(members):,} tar members')
             # A registry re-encode: same tar content, better container.
             report('layer, re-encoded from the inner tar', tar,
-                   f'(vs {len(blob):,} B as shipped)')
+                   f'(vs {len(blob):,} B as shipped)', extra=oci_codecs())

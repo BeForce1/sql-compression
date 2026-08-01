@@ -48,8 +48,18 @@ def _unpack(blob):
 
 
 def page_size(data):
+    """Header bytes 16-17, or 0 if this is not a usable page array.
+
+    Not everything a directory walker hands you is a database. An empty file, a
+    truncated one, or a -wal sidecar (whose salt-1 sits at offset 16) can all put
+    zero here, and len(data) // 0 is a crash rather than a lossless no-op.
+    """
+    if len(data) < 100:
+        return 0
     ps = int.from_bytes(data[16:18], 'big')
-    return 65536 if ps == 1 else ps
+    if ps == 1:
+        return 65536
+    return ps if 512 <= ps <= 65536 and not (ps & (ps - 1)) else 0
 
 
 def _kind(i, page):
@@ -59,23 +69,27 @@ def _kind(i, page):
 
 def transform(data):
     ps = page_size(data)
-    n = len(data) // ps
+    n = len(data) // ps if ps else 0
+    if not n:                                # not a page array: ride in the tail
+        return _pack([(0).to_bytes(4, 'big'), b'', b'', data])
     pages = [data[i * ps:(i + 1) * ps] for i in range(n)]
     tail = data[n * ps:]                     # trailing partial page, if any
 
     # Stable sort by kind: like pages adjacent, original order preserved within
-    # a kind so sequential similarity survives.
-    order = sorted(range(n), key=lambda i: (_kind(i, pages[i]), i))
-    perm = b''.join(i.to_bytes(4, 'big') for i in order)
+    # a kind so sequential similarity survives. Store the KIND bytes, not the
+    # permutation - the sort is a pure function of them, so a 4-byte page index
+    # is three bytes of nothing. Worth doing because the whole gain here is 0.4-4%.
+    kinds = bytes(_kind(i, pages[i]) for i in range(n))
+    order = sorted(range(n), key=lambda i: (kinds[i], i))
     body = b''.join(pages[i] for i in order)
-    return _pack([ps.to_bytes(4, 'big'), perm, body, tail])
+    return _pack([ps.to_bytes(4, 'big'), kinds, body, tail])
 
 
 def restore(blob):
-    ps_b, perm, body, tail = _unpack(blob)
+    ps_b, kinds, body, tail = _unpack(blob)
     ps = int.from_bytes(ps_b, 'big')
-    order = [int.from_bytes(perm[i:i + 4], 'big') for i in range(0, len(perm), 4)]
-    pages = [None] * len(order)
+    order = sorted(range(len(kinds)), key=lambda i: (kinds[i], i))
+    pages = [None] * len(kinds)
     for slot, orig in enumerate(order):
         pages[orig] = body[slot * ps:(slot + 1) * ps]
     return b''.join(pages) + tail
@@ -99,7 +113,17 @@ BACKENDS = {
     'xz -9': lambda d: lzma.compress(d, preset=9),
 }
 
+def selfcheck():
+    """Inputs a directory walker will find that are not databases."""
+    for bad in (b'', b'\0' * 50, b'\0' * 4096, os.urandom(200),
+                b'SQLite format 3\0' + b'\0' * 200,       # zero page size
+                b'SQLite format 3\0' + b'\x00\x07' + b'\0' * 200):  # 7: not a power of 2
+        assert restore(transform(bad)) == bad, bad[:20]
+    print('selfcheck: ok')
+
+
 if __name__ == '__main__':
+    selfcheck()
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(DATA,'wiki.db')
     data = open(path, 'rb').read()
 
