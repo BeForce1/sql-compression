@@ -20,8 +20,9 @@ algorithm at all.
 | target | best existing | with this repo | gain | effort |
 |---|---:|---:|---:|---|
 | **OCI / Docker layer** | 29,780,905 (gzip, as shipped) | **19,383,787** (`zstd -19 --long=27`) | **−34.9%** | **zero code** |
-| **SQL dump**, narrow columns | 102,532 (`xz -9`) | **73,252** | **−28.6%** | ~240 lines, lossless |
+| **SQL dump**, narrow columns | 102,532 (`xz -9`) | **72,612** | **−29.2%** | ~350 lines, lossless |
 | **SQL dump**, 6 columns + timestamps | 99,188 (`xz -9`) | **77,212** | **−22.2%** | same code |
+| **SQL dump**, multiline article blob | 1,910,312 (`xz -9`) | **1,879,880** | **−1.6%** | same code |
 | **SQLite**, page grouping | 2,088,376 (`xz -9`) | 2,077,660 | −0.5% | dead end |
 
 Round-trip is asserted on every run, and a `selfcheck()` covers twelve dump shapes the

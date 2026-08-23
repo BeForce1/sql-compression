@@ -17,30 +17,20 @@ refuted table in the README). What remains there is model-shaped, not spelling-s
 
 ---
 
-## 1. Statement-level parsing — **half a day** ⭐ best value
+## 1. Statement-level parsing — **DONE 2026-08-23** (−1.6% / 30.4 KB saved on `wiki.sql`)
 
-The parser is line-based, so it only matches an INSERT that fits on one physical line.
-SQLite's `.dump` emits string values containing raw newlines, and **97.7% of `wiki.sql`
-(6.8 MB) therefore bypasses the transform entirely**.
+Shipped in `sqldump.py`. Quote-aware statement accumulation captures 100% of all 5,065
+`INSERT` statements in `wiki.sql` (including all 3,889 multi-line bodies). Length-prefixed
+`B:n` format stores multi-line string columns without newline delimiter ambiguity.
 
-The work:
-- accumulate physical lines into one statement while inside an unbalanced `'` quote, until
-  the statement ends with `);`
-- switch the `A` (ASCII) column storage from `b'\n'.join` to length-prefixed values — the
-  container already handles arbitrary bytes, and newline-joining becomes ambiguous once a
-  field can contain one
-- record the physical-line count per statement in the plan so the rejoin stays byte-exact
+---
 
-**Buys:** the 6.8 MB currently opaque, and it turns the wiki.sql row back into a real
-controlled test of the shape hypothesis instead of a parser artifact. The text column
-dominates that file so the full −22% will not transfer, but the revision metadata embedded
-in it — timestamps, IDs, usernames — is exactly what produced the wiki_meta gain. Expect
-low single digits on a 1.9 MB output, i.e. tens of KB.
+## 2. More value spellings — **DONE 2026-08-23** (chinook −29.2%)
 
-**Watch:** `split_values` currently processes only 1,176 bodies on that file. After this it
-processes ~30× more, and a `find()`-based splitter measured 6.3× faster with byte-identical
-output on all 21,848 bodies across the three dumps. Not needed before then — transform time
-is currently 0.09 s against ~7 s for the xz pass.
+Shipped in `sqldump.py`:
+- **Fixed-precision decimals (`_decimals`)**: Cents-scaled integers + byte-planes (`F:k:w:n`) / delta-planes (`Z:k:wd:n`).
+- **SQL datetime format (`_stamps`)**: Space-separated `'YYYY-MM-DD HH:MM:SS'` timestamps to epoch seconds + byte-planes (`Q:w:n`) / delta-planes (`W:wd:n`).
+- **`NULL`-presence bitmap (`_encode_col` null path)**: 1-bit-per-row bitmap (`N:n:dense_tok` and `U:n`) allowing dense non-null integers and strings to compress cleanly.
 
 ---
 

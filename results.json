@@ -46,11 +46,11 @@
         "chinook.sql": {
           "raw": 968170,
           "xz -9": 102532,
-          "transform+xz": 73252,
-          "gain": 0.286,
+          "transform+xz": 72612,
+          "gain": 0.292,
           "zstd -19": 119423,
-          "transform+zstd": 76924,
-          "gain_zstd": 0.356,
+          "transform+zstd": 76096,
+          "gain_zstd": 0.363,
           "shape": "real relational schema, many narrow typed columns",
           "columnar_only": {
             "transform+xz": 84256,
@@ -78,12 +78,12 @@
         "wiki.sql": {
           "raw": 6971231,
           "xz -9": 1910312,
-          "transform+xz": 1906140,
-          "gain": 0.002,
-          "shape": "one dominant TEXT column - already effectively columnar",
+          "transform+xz": 1879880,
+          "gain": 0.016,
+          "shape": "one dominant TEXT column with multiline articles",
           "zstd -19": 1955031,
-          "transform+zstd": 1950450,
-          "gain_zstd": 0.002,
+          "transform+zstd": 1919125,
+          "gain_zstd": 0.018,
           "columnar_only": {
             "transform+xz": 1908248,
             "gain": 0.001
