@@ -2,55 +2,72 @@
 
 Costed and ordered. Everything here is blocked on work, not on ideas.
 
-**Where the bytes actually are** — chinook's 73,252 compressed bytes, by column:
+**Where the bytes actually are** — chinook's 64 columns, each compressed with `xz -9` in
+isolation, re-measured 2026-08-31 at the shipped encoders:
 
-| column | xz -9 bytes | kind |
-|---|---:|---|
-| `Track.1` (names) | 26,755 | string |
-| `Track.7` (file sizes) | 13,209 → 10,678 planes | int, already handled |
-| `Track.5` (composers) | 10,215 | string |
-| `Track.6` (durations) | 10,076 → 8,367 planes | int, already handled |
-| everything else | ~15,000 | mixed |
+| column | xz -9 bytes | encoding chosen | kind |
+|---|---:|---|---|
+| `Track.1` (names) | 26,224 | `K:A` | string |
+| `Track.7` (file sizes) | 10,700 | `T:4` planes | int, handled |
+| `Track.5` (composers) | 10,064 | `N:K:A` | string, NULL-heavy |
+| `Track.6` (durations) | 8,352 | `T:3` planes | int, handled |
+| `Album.1` (titles) | 4,072 | `K:A` | string |
+| `Artist.1` | 3,028 | `K:A` | string |
+| `PlaylistTrack.1` | 2,528 | `D` delta | int, handled |
+| the other 57 | 14,472 | mixed | mixed |
 
-**Strings are ~70% of the residual, and the two cheap re-spellings both lost** (see the
-refuted table in the README). What remains there is model-shaped, not spelling-shaped.
+Those sum to 79,440 against a whole-file 71,768, because compressing each column alone
+throws away the cross-column context and pays 64 stream headers. Use it for *shares*, not
+for a budget.
 
----
-
-## 1. Statement-level parsing — **DONE 2026-08-23** (−1.6% / 30.4 KB saved on `wiki.sql`)
-
-Shipped in `sqldump.py`. Quote-aware statement accumulation captures 100% of all 5,065
-`INSERT` statements in `wiki.sql` (including all 3,889 multi-line bodies). Length-prefixed
-`B:n` format stores multi-line string columns without newline delimiter ambiguity.
-
----
-
-## 2. More value spellings — **DONE 2026-08-23** (chinook −29.2%)
-
-Shipped in `sqldump.py`:
-- **Fixed-precision decimals (`_decimals`)**: Cents-scaled integers + byte-planes (`F:k:w:n`) / delta-planes (`Z:k:wd:n`).
-- **SQL datetime format (`_stamps`)**: Space-separated `'YYYY-MM-DD HH:MM:SS'` timestamps to epoch seconds + byte-planes (`Q:w:n`) / delta-planes (`W:wd:n`).
-- **`NULL`-presence bitmap (`_encode_col` null path)**: 1-bit-per-row bitmap (`N:n:dense_tok` and `U:n`) allowing dense non-null integers and strings to compress cleanly.
+**Text columns are 69.0% of the residual (54,812 of 79,440), and all three cheap
+re-spellings that could apply to them have now been tried**: dictionary-encoding lost,
+front-coding lost, and the quote strip won 844 B. What remains there is model-shaped, not
+spelling-shaped.
 
 ---
 
-## 2. More value spellings — **hours each, speculative**
+## ~~1. Statement-level parsing~~ — **DONE 2026-08-23** (`wiki.sql` 0.2% → 1.7%)
 
-The timestamp candidate paid 5.8% on the one file that had a timestamp column. The same
-pattern may apply to other wasteful notations, and the machinery to add one is ~15 lines:
-a detector, an encoder, and an exact re-render gate.
+Shipped in `sqldump.py`. Quote-aware statement accumulation captures all 5,065 `INSERT`
+statements in `wiki.sql`, including all 3,889 multi-line bodies — **86.4% of the file's
+bytes**, up from 2.3%. Length-prefixed `B:n` stores multi-line string columns without
+newline-delimiter ambiguity.
 
-Candidates worth a measurement, in rough order of how often they appear in real dumps:
+This also settled a claim the repo had been carrying as "not supported": with the
+instrument fixed, a 37× increase in coverage bought 1.5 points, so the shape hypothesis is
+now *earned* rather than guessed. See the README's refuted table.
+
+---
+
+## ~~2. More value spellings~~ — **DONE 2026-08-23 / 08-31** (chinook −28.6% → −30.0%)
+
+Shipped in `sqldump.py`, in the order they landed:
+- **Fixed-precision decimals (`_decimals`)** — cents-scaled integers + byte-planes
+  (`F:k:w:n`) / delta-planes (`Z:k:wd:n`).
+- **SQL datetime (`_stamps`)** — `'YYYY-MM-DD HH:MM:SS'` to epoch seconds + planes (`Q:w:n`)
+  / delta-planes (`W:wd:n`).
+- **`NULL`-presence bitmap** — 1 bit per row (`N:n:dense_tok`, `U:n`), so a dense run of
+  integers or strings compresses without the literal `NULL`s interleaved.
+- **Quote strip (`K:<inner>`)** — 2026-08-31, −844 B chinook / −660 B wiki_meta /
+  −1,584 B wiki.sql. Also lets a quoted number or timestamp reach the integer path.
+
+### 2b. The spellings still untried — **hours each, speculative**
+
+The machinery to add one is ~15 lines: a detector, an encoder, and an exact re-render gate.
+Only worth writing if a real dump has that column type in volume, so **measure the column's
+current xz cost first** — chinook's datetime column costs 652 bytes total, so perfecting it
+could never have mattered, while wiki_meta's cost 20,824.
+
 - **UUIDs / hex blobs** — `X'A1B2...'` and `'550e8400-e29b-...'` are 2 ASCII bytes per
-  information byte. Unpack to raw bytes, then planes.
-- **Fixed-precision decimals** — `'19.99'` as an integer count of cents.
-- **Booleans / low-cardinality enums** — likely already handled well by xz, so measure
-  before writing.
-- **`NULL`-heavy columns** — a presence bitmap plus the dense values.
+  information byte. Unpack to raw bytes, then planes. **No column in the three sample dumps
+  has this shape**, so it needs a fixture before it can be measured at all.
+- **Booleans / low-cardinality enums** — likely already handled well by xz. Measure first.
+- **Dictionary/front-coding the text columns** — already tried, already lost. Do not redo.
 
-Each is only worth writing if a real dump has that column type in volume. **Measure the
-column's current xz cost first**: chinook's datetime column costs 652 bytes total, so
-perfecting it could never have mattered, while wiki_meta's cost 20,824.
+The honest read on this section: text is 69% of chinook's residual and every cheap
+re-spelling for it is now spent. The next real win there is a better *model*, not a better
+notation — which is the other repo's problem.
 
 ---
 
@@ -101,7 +118,7 @@ Each one is a fixture plus, at most, a regex widening. `selfcheck()` is the righ
 Measured, negative, recorded in `results.json` — do not re-derive:
 
 - **dictionary-encoding or front-coding the string columns.** Both lose to plain xz.
-- **RLE on the plan stream.** ≤168 B on a 73 KB output.
+- **RLE on the plan stream.** ≤168 B on a 72 KB output.
 - **replacing the zstd-3 proxy with the real backend** for picking column encodings. The
   proxy already picks the xz optimum on every heavy column tested.
 - **`zstd -22 --ultra` for the OCI layer.** 0.9% over `-19 --long=27` for ~3× the time.

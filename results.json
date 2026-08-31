@@ -41,16 +41,16 @@
       }
     },
     "sql_dumps": {
-      "_about": "Byte-lossless columnar transform, shapes/sqldump.py. A dump stores rows, so a timestamp sits beside a title beside an integer - three distributions interleaved. Regrouping column-major fixes that; each column is then stored the smallest of five ways (ASCII, delta, byte-planes, delta+planes, or epoch-seconds+planes for ISO-8601 timestamps), chosen per column by a proxy codec. Round-trip asserted every run, plus a selfcheck() over dump shapes the sample files do not contain. 'columnar_only' is the regrouping alone; 'columnar_plus_int_only' adds the integer codec but not timestamps.",
+      "_about": "Byte-lossless columnar transform, sqldump.py. A dump stores a table row-major, so a timestamp sits beside a title beside an integer - three distributions interleaved. Regrouping column-major fixes that; each column is then stored the smallest of several ways (ASCII, delta, byte-planes, delta+planes, cents-scaled decimals, epoch-seconds for ISO-8601 and SQL datetimes, a NULL-presence bitmap over dense values, and a quote strip that re-encodes what is inside), chosen per column by a proxy codec. Round-trip asserted every run, plus a selfcheck() over dump shapes the sample files do not contain. 'columnar_only' is the regrouping alone; 'columnar_plus_int_only' adds the integer codec but not timestamps - both predate the 2026-08-23/31 codecs and are kept as the historical decomposition of the 17.8%/28.5% path.",
       "files": {
         "chinook.sql": {
           "raw": 968170,
           "xz -9": 102532,
-          "transform+xz": 72612,
-          "gain": 0.292,
+          "transform+xz": 71768,
+          "gain": 0.3,
           "zstd -19": 119423,
-          "transform+zstd": 76096,
-          "gain_zstd": 0.363,
+          "transform+zstd": 75393,
+          "gain_zstd": 0.369,
           "shape": "real relational schema, many narrow typed columns",
           "columnar_only": {
             "transform+xz": 84256,
@@ -60,11 +60,11 @@
         "wiki_meta.sql": {
           "raw": 498607,
           "xz -9": 99188,
-          "transform+xz": 77212,
-          "gain": 0.222,
+          "transform+xz": 76552,
+          "gain": 0.228,
           "zstd -19": 110423,
-          "transform+zstd": 80450,
-          "gain_zstd": 0.271,
+          "transform+zstd": 79851,
+          "gain_zstd": 0.277,
           "shape": "6 narrow columns, real data",
           "columnar_only": {
             "transform+xz": 85044,
@@ -78,19 +78,20 @@
         "wiki.sql": {
           "raw": 6971231,
           "xz -9": 1910312,
-          "transform+xz": 1879880,
-          "gain": 0.016,
+          "transform+xz": 1878296,
+          "gain": 0.017,
           "shape": "one dominant TEXT column with multiline articles",
           "zstd -19": 1955031,
-          "transform+zstd": 1919125,
-          "gain_zstd": 0.018,
+          "transform+zstd": 1916971,
+          "gain_zstd": 0.019,
           "columnar_only": {
             "transform+xz": 1908248,
             "gain": 0.001
-          }
+          },
+          "parser_coverage": "Statement-level parsing (2026-08-23) captures all 5,065 INSERT statements, 86.4% of the file's bytes, up from 1,176 line-matching statements and 2.3% of bytes. The gain moved 0.2% -> 1.7%, so this file is now a VALID test of the shape hypothesis rather than a parser-coverage measurement - and the hypothesis holds."
         }
       },
-      "finding": "Value depends entirely on table SHAPE, not size. Narrow typed columns: 22-29% better than xz. One dominant blob column: nothing - but see the wiki.sql note, that file barely reaches the parser. Regrouping alone was worth 14-18%; re-spelling integer columns took chinook to 28.5%; re-spelling ISO-8601 timestamps as epoch seconds took wiki_meta from 17.4% to 22.2%. Most of the win beyond the regrouping was in HOW values were spelled, not where they sat.",
+      "finding": "Value depends on table SHAPE, and the shape claim is now properly tested. Narrow typed columns: 22.8-30.0% better than xz -9. One dominant multiline TEXT column: 1.7%, measured with 86.4% of that file's bytes actually reaching the transform. Regrouping alone was worth 14-18%; re-spelling values took chinook to 28.5% (integers), 28.6% (ISO-8601 timestamps), 29.2% (decimals, SQL datetimes, NULL bitmap) and 30.0% (quote strip). Most of the win beyond the regrouping was in HOW values were spelled, not where they sat.",
       "int_encoding": {
         "_about": "Per-column choice, measured in isolation with xz -9e pb=0 lc=4. Neither encoding wins everywhere, which is why the pick is stored rather than predicted. The timestamp row is the same mechanism applied to a string column: 22 bytes of ISO-8601 spell a number that fits in four.",
         "examples": {
@@ -132,6 +133,24 @@
             "epoch_delta_planes": 16816
           }
         }
+      },
+      "quote_strip": {
+        "_about": "A uniformly quoted column spends two bytes per row on delimiters the column header already implies. Strip them and re-encode the inside through the same candidate set, which also lets a quoted-number or quoted-timestamp column reach the integer path. Token K:<inner>. Measured 2026-08-31.",
+        "chinook.sql": {
+          "before": 72612,
+          "after": 71768,
+          "saved": 844
+        },
+        "wiki_meta.sql": {
+          "before": 77212,
+          "after": 76552,
+          "saved": 660
+        },
+        "wiki.sql": {
+          "before": 1879880,
+          "after": 1878296,
+          "saved": 1584
+        }
       }
     },
     "sqlite_pages": {
@@ -171,8 +190,9 @@
     },
     {
       "claim": "the wiki.sql -0.1% proves columnarisation fails on single-blob-column tables",
-      "outcome": "NOT SUPPORTED BY THAT MEASUREMENT",
-      "detail": "Audited 2026-07-31: only 1,176 of 68,576 lines match the INSERT regex, because SQLite .dump emits string values containing raw newlines and the parser is line-based. 6,813,857 of 6,971,231 bytes (97.7%) ride in the literals stream untouched, so the transform essentially never ran on this file. The shape hypothesis may still be true - wiki_meta is the controlled test for it - but wiki.sql is evidence of parser coverage, not of columnar failure. Statement-level parsing is the fix."
+      "outcome": "NOT SUPPORTED BY THAT MEASUREMENT, THEN SUPPORTED BY A BETTER ONE",
+      "detail": "Audited 2026-07-31: only 1,176 of 68,576 lines matched the line-based INSERT regex, because SQLite .dump emits string values containing raw newlines. 6,813,857 of 6,971,231 bytes (97.7%) rode in the literals stream untouched, so the transform essentially never ran on that file and the number measured parser coverage, not table shape. Statement-level parsing shipped 2026-08-23 and closed the gap: all 5,065 INSERT statements now parse and 86.4% of the file's bytes reach the transform. The gain moved 0.2% -> 1.7%. The original claim was therefore cited from invalid evidence and is now supported by valid evidence: a 37x increase in coverage bought 1.5 points, which is what a table whose bytes are one dominant TEXT column looks like.",
+      "lesson": "A refutation can be right about the evidence and wrong about the conclusion. Fixing the instrument was the only way to tell which, and it cost a parser rewrite to earn the same verdict the bad measurement had guessed."
     },
     {
       "claim": "dictionary-encoding the dominant string columns (unique values + index ints) will beat storing them raw",

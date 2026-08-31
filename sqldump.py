@@ -186,7 +186,7 @@ def _planes(vals, w):
     return b''.join(b[i::w] for i in range(w))
 
 
-def encode_col(col, allow_null=True):
+def encode_col(col, allow_null=True, allow_unquote=True):
     """(token, blob) for one column, stored the smallest of candidate ways."""
     n = len(col)
     cands = []
@@ -200,8 +200,21 @@ def encode_col(col, allow_null=True):
         for i, v in enumerate(col):
             if v != b'NULL':
                 mask[i // 8] |= (1 << (7 - (i % 8)))
-        dense_tok, dense_blob = encode_col(dense, allow_null=False)
+        dense_tok, dense_blob = encode_col(dense, allow_null=False, allow_unquote=allow_unquote)
         cands.append(((b'N:%d:%s' % (n, dense_tok)), bytes(mask) + dense_blob))
+
+    # A uniformly quoted column spends two bytes per row on delimiters the
+    # column header already implies. Strip them and re-encode the inside, which
+    # also lets a quoted-number column reach the integer and timestamp paths.
+    # Worth -844 B on chinook (29.2% -> 30.0%) and -660 B on wiki_meta
+    # (22.2% -> 22.8%). allow_unquote=False on the recursion: one strip is the
+    # whole idea, and a second would re-enter on values that merely happen to
+    # start and end with a quote.
+    if allow_unquote and col and all(
+            v.startswith(b"'") and v.endswith(b"'") and len(v) >= 2 for v in col):
+        unquoted = [v[1:-1] for v in col]
+        unq_tok, unq_blob = encode_col(unquoted, allow_null=False, allow_unquote=False)
+        cands.append(((b'K:%s' % unq_tok), unq_blob))
 
     nums, kind, k_dec = _ints(col), b'T', 0
     if not nums:
@@ -243,6 +256,10 @@ def encode_col(col, allow_null=True):
 
 
 def decode_col(tok, blob):
+    if tok.startswith(b'K:'):
+        sub_tok = tok[2:]
+        unquoted = decode_col(sub_tok, blob)
+        return [b"'" + v + b"'" for v in unquoted]
     if tok.startswith(b'U:'):
         n = int(tok.split(b':')[1])
         return [b'NULL'] * n
@@ -455,17 +472,23 @@ def selfcheck():
         [b'NULL', b'NULL', b'NULL'],          # all NULLs -> U:n
         [b'NULL', b'1', b'2', b'NULL', b'3'], # mixed NULLs + ints -> N:5:T...
         [b'NULL', b'0.99', b'1.98', b'NULL'], # mixed NULLs + decimals -> N:4:F...
+        [b"'a'", b"'", b"'c'"],             # not uniformly quoted -> no K:
+        [b"'1'", b"'2'", b"'3'"],            # quoted ints -> K: reaches the int path
     ]
     for col in cols:
         tok, blob = encode_col(col)
         assert decode_col(tok, blob) == col, (tok, col)
     assert encode_col([b'007', b'8'])[0] == b'A'
     assert encode_col([b'--7', b'8'])[0] == b'A'
-    assert encode_col([b"'0000-99-99T99:99:99Z'", b"'2005-12-27T18:46:47Z'"])[0] == b'A'
+    assert encode_col([b"'0000-99-99T99:99:99Z'", b"'2005-12-27T18:46:47Z'"])[0].endswith(b'A')
     assert encode_col([b'0.9', b'1.99'])[0] == b'A'
-    assert encode_col([b"'hello\nworld'", b"'test'"])[0].startswith(b'B:')
+    assert encode_col([b"'hello\nworld'", b"'test'"])[0].endswith(b':2')
     assert encode_col([b'NULL', b'NULL'])[0] == b'U:2'
     assert encode_col([b'NULL', b'1', b'2', b'NULL'])[0].startswith(b'N:4:')
+    # The quote strip must fire only when every value carries delimiters, and
+    # must hand what is inside to the same candidate set as an unquoted column.
+    assert encode_col([b"'1'", b"'2'", b"'3'"])[0].startswith(b'K:')
+    assert not encode_col([b"'a'", b"'", b"'c'"])[0].startswith(b'K:')
 
     # Whole-dump shapes. Every one of these round-tripped to DIFFERENT bytes or
     # crashed before the 2026-07-31 audit; the shipped dumps hid all of them by

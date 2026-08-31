@@ -33,7 +33,7 @@ def chart_targets():
         ('SQL dump, 6 columns + timestamps', 100 * sql['wiki_meta.sql']['gain'], OURS),
         ('SQLite, page grouping',
          100 * max(v['gain'] for v in t['sqlite_pages']['results'].values()), BAD),
-        ('SQL dump, parser reaches 2%', 100 * sql['wiki.sql']['gain'], BAD),
+        ('SQL dump, one multiline TEXT column', 100 * sql['wiki.sql']['gain'], BAD),
     ]
     fig, ax = plt.subplots(figsize=(8.6, 3.4))
     fig.patch.set_facecolor(BG)
@@ -57,7 +57,7 @@ def chart_targets():
                 fontsize=9, fontweight='bold')
     ax.set_xlim(0, max(r[1] for r in rows) * 1.15)
     ax.text(0, 1.0, 'The biggest win needed no code at all - two codec flags. The bottom row is a '
-                    'parser limit, not a result.',
+                    'real result now: 86% of that file reaches the transform and it still pays 1.7%.',
             transform=ax.transAxes, color=MUTED, fontsize=8, va='bottom')
     os.makedirs(OUT, exist_ok=True)
     path = os.path.join(OUT, 'chart_targets.svg')

@@ -6,7 +6,7 @@ by exploiting the shape of the format instead of building a better model.**
 A SQL dump stores rows. That means a timestamp sits beside a title beside an integer —
 three different distributions interleaved, which is the worst case for any entropy coder.
 Regrouping the bytes column-major so like sits with like, then re-spelling the values that
-are written in a wasteful notation, gets **22–29% below `xz -9`** while reproducing the
+are written in a wasteful notation, gets **23–30% below `xz -9`** while reproducing the
 input byte for byte.
 
 The method matters more than the transforms: **measure the incumbent before inventing.**
@@ -20,9 +20,9 @@ algorithm at all.
 | target | best existing | with this repo | gain | effort |
 |---|---:|---:|---:|---|
 | **OCI / Docker layer** | 29,780,905 (gzip, as shipped) | **19,383,787** (`zstd -19 --long=27`) | **−34.9%** | **zero code** |
-| **SQL dump**, narrow columns | 102,532 (`xz -9`) | **72,612** | **−29.2%** | ~350 lines, lossless |
-| **SQL dump**, 6 columns + timestamps | 99,188 (`xz -9`) | **77,212** | **−22.2%** | same code |
-| **SQL dump**, multiline article blob | 1,910,312 (`xz -9`) | **1,879,880** | **−1.6%** | same code |
+| **SQL dump**, narrow columns | 102,532 (`xz -9`) | **71,768** | **−30.0%** | ~520 lines, lossless |
+| **SQL dump**, 6 columns + timestamps | 99,188 (`xz -9`) | **76,552** | **−22.8%** | same code |
+| **SQL dump**, multiline article blob | 1,910,312 (`xz -9`) | **1,878,296** | **−1.7%** | same code |
 | **SQLite**, page grouping | 2,088,376 (`xz -9`) | 2,077,660 | −0.5% | dead end |
 
 Round-trip is asserted on every run, and a `selfcheck()` covers twelve dump shapes the
@@ -79,9 +79,22 @@ Losslessness is not assumed: a value must re-render byte-exactly from its epoch 
 the column falls back. `'0000-99-99T99:99:99Z'` matches the shape and is not a date, so it
 fails the gate rather than corrupting — `selfcheck()` asserts exactly that.
 
-**Cumulative:** regrouping alone −17.8%, plus integer re-spelling −28.5%, plus timestamps
-−28.6% on chinook and −22.2% on wiki_meta. Most of the win was in *how values were
-spelled*, not where they sat.
+### 4. Strip the quotes the header already implies
+
+A uniformly quoted column spends two bytes per row on delimiters that the column's own
+position already determines. Stripping them and re-encoding the inside through the same
+candidate set is worth **−844 B on chinook** (29.2% → 30.0%), **−660 B on wiki_meta**
+(22.2% → 22.8%) and **−1,584 B on wiki.sql**. It also opens a second door: a quoted number
+or a quoted timestamp can now reach the integer and epoch paths it was previously locked
+out of.
+
+The strip does not recurse. One is the whole idea; a second pass would re-fire on values
+that merely happen to begin and end with a quote.
+
+**Cumulative on chinook:** regrouping alone −17.8%, plus integer re-spelling −28.5%, plus
+ISO-8601 timestamps −28.6%, plus decimals / SQL datetimes / a NULL bitmap −29.2%, plus the
+quote strip −30.0%. wiki_meta runs the same path to −22.8%. Most of the win was in *how
+values were spelled*, not where they sat.
 
 ---
 
@@ -142,18 +155,25 @@ short version:
 | the cheap proxy codec will mis-pick vs real xz | **refuted** | picked the optimum on all 5 heavy columns, 0 B wasted |
 | `xz pb=0 lc=4` tuning is worth ~2 points | **true, then not** | 1.9 pts before the value codec, 0.4 after — same problem, fixed properly |
 | grouping SQLite pages by kind will help | **refuted** | 0.5–4.1%; real databases are overwhelmingly one kind |
-| wiki.sql's −0.1% proves shape decides the win | **not supported** | 97.7% of that file never reaches the parser — see below |
+| wiki.sql's −0.1% proves shape decides the win | **cited from a broken instrument, then earned** | 97.7% of the file bypassed the parser. Fixed; 86.4% now reaches it and the gain is still 1.7% — see below |
 
-That last one is the most useful. `wiki.sql` was cited as the controlled proof that
-single-blob-column tables cannot be columnarised. It is not: only **1,176 of its 68,576
-lines** match the line-based INSERT parser, because SQLite's `.dump` emits raw newlines
-inside string values. 6.8 MB of it rides through untouched. It measures parser coverage,
-not table shape. `wiki_meta.sql` — the same rows with the body column dropped — remains a
-valid controlled test.
+That last one is the most useful, and it has now closed both ways. `wiki.sql` was cited as
+the controlled proof that single-blob-column tables cannot be columnarised, and it wasn't:
+only **1,176 of its 68,576 lines** matched the line-based INSERT parser, because SQLite's
+`.dump` emits raw newlines inside string values, so 6.8 MB rode through untouched. That
+number measured parser coverage, not table shape.
+
+Statement-level parsing fixed the instrument. All **5,065** INSERT statements now parse and
+**86.4%** of the file's bytes reach the transform — a 37× increase in coverage — and the
+gain moved 0.2% → **1.7%**. So the original claim was right about the conclusion and wrong
+about its evidence: on a table whose bytes are one dominant multiline TEXT column, there is
+almost nothing for a columnar transform to regroup. It cost a parser rewrite to earn the
+verdict the bad measurement had guessed, which is the only way to know which half was
+wrong.
 
 **The residual is now model-shaped, not spelling-shaped.** Strings are ~70% of what is left
-(`Track.1` alone is 26,755 of chinook's 73,252 bytes), and both obvious cheap re-spellings
-lost.
+(`Track.1` alone is ~26.7 KB of chinook's 71,768 bytes), and both obvious cheap
+re-spellings lost. The quote strip below is the last cheap byte.
 
 ---
 
@@ -164,8 +184,8 @@ pip install -r requirements.txt
 python scripts/fetch_data.py     # Docker layer, SQLite dbs, SQL dumps. ~130 MB, one time.
 
 python baseline.py               # measure the incumbents FIRST
-python sqldump.py data/chinook.sql       # the 28.6% win, round-trip asserted
-python sqldump.py data/wiki_meta.sql     # the 22.2% win
+python sqldump.py data/chinook.sql       # the 30.0% win, round-trip asserted
+python sqldump.py data/wiki_meta.sql     # the 22.8% win
 python sqlitepages.py data/wiki.db       # the dead end, for the record
 python make_chart.py             # regenerate the chart from results.json
 ```
@@ -197,7 +217,7 @@ so the headline number stays reproducible.
 
 This began as "Part 2" of [`llm-compression-lab`](https://github.com/BeForce1/llm-compression-lab),
 where the other half asks whether a language model can beat general compressors (it can:
-0.940 bpb on `alice29.txt`, verified round-trip — and it is far too slow to use). The two
+0.915 bpb on `alice29.txt`, verified round-trip — and it is far too slow to use). The two
 halves share nothing but a method, so they are now separate repos. Git history for these
 files is preserved from the original.
 
