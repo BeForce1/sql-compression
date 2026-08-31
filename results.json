@@ -184,6 +184,11 @@
       "detail": "0.4-4.0%. Real databases are overwhelmingly one page kind (2,830 of 2,913 leaf-table in wiki.db) and freshly built ones have no free pages, so there is nothing to group."
     },
     {
+      "claim": "the Docker layer opportunity needs a clever transform",
+      "outcome": "INVERTED - it needed no code at all",
+      "detail": "Re-encoding the identical tar with zstd -19 saves 32.3% and with xz -9 40.3%. The win was a codec default, not an algorithm. Recorded in llm-compression-lab until 2026-08-31, which was the wrong repo: the split moved the code and the measurement here but left the refutation behind."
+    },
+    {
       "claim": "xz filter tuning (pb=0, lc=4) is worth ~2 points on the SQL dump headline",
       "outcome": "TRUE BEFORE THE TRANSFORM, THEN NOT",
       "detail": "Against the plain columnar container it moved chinook 17.8% -> 19.7%. After per-column int encoding the same flags are worth 0.4 points (28.5% -> 28.9%) and they shrink the plain baseline by about as much, so the same-config gain does not move. The flags and the encoding were fixing the same thing: decimal digits misaligned against the coder. Not shipped."
